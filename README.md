@@ -1,16 +1,16 @@
 # PSN2MAVLink
 
-A lightweight bridge between PosiStageNet (PSN) tracking feeds and MAVLink, enabling UAVs to localise using Ultra Wideband (UWB) anchors and tags. The bridge listens to PSN multicast/unicast traffic, converts tracker poses into MAVLink `VISION_POSITION_ESTIMATE` messages, and streams them to autopilots such as ArduPilot or PX4 in real time.
+PSN2MAVLink is a lightweight bridge between PosiStageNet (PSN) tracking feeds and MAVLink-enabled autopilots. It listens for PSN multicast/unicast packets, converts tracker poses into `VISION_POSITION_ESTIMATE` messages, and streams them to ArduPilot, PX4, or any GCS that understands MAVLink. Use it to expose UWB anchor/tag localisation data to drones in real time.
 
 ---
 
-## Highlights
+## Features
 
-- **Protocol broker** – consumes PSN tracking packets and republishes them as MAVLink pose updates.
-- **Flexible transport** – forward MAVLink over UDP _or_ TCP to match your ground station / autopilot link.
-- **Frame alignment** – optional NED conversion (PSN Z-up ➜ MAVLink Z-down) for plug-and-play integration.
-- **Multicast, unicast & interface selection** – subscribe to theatre networks or local simulators with ease.
-- **Tiny footprint** – single C++17 executable with zero runtime dependencies beyond the MAVLink headers.
+- **Protocol broker:** ingests PSN tracker updates and republishes them as MAVLink pose messages.
+- **UDP or TCP egress:** send MAVLink packets via stateless UDP or maintain a TCP uplink for ground stations such as MAVProxy.
+- **Z-up to NED conversion:** converts PSN’s Z-up frame to MAVLink’s North-East-Down by default (toggle with `--no-ned`).
+- **Multicast/unicast flexibility:** subscribe to theatre networks, simulators, or loopback feeds; specify the network interface when needed.
+- **Zero external runtime deps:** single C++17 executable built against the upstream `c_library_v2` headers.
 
 ---
 
@@ -18,12 +18,12 @@ A lightweight bridge between PosiStageNet (PSN) tracking feeds and MAVLink, enab
 
 ```mermaid
 flowchart LR
-    PSN[PosiStageNet Source\n(multicast / unicast UDP)] -->|tracker packets| Bridge(psn_to_mavlink.exe)
+    PSN[PosiStageNet Source<br/>(multicast or unicast UDP)] -->|tracker packets| Bridge(psn_to_mavlink.exe)
     subgraph Bridge
-        Direction[Coordinate transform\n(Z-up -> NED)]
+        Direction[Coordinate transform<br/>(Z-up ➜ NED)]
         Encoder[MAVLink encoder]
     end
-    Bridge -->|VISION_POSITION_ESTIMATE| Autopilot[Autopilot / GCS\n(UDP or TCP)]
+    Bridge -->|VISION_POSITION_ESTIMATE| Autopilot[Autopilot / GCS<br/>(UDP or TCP)]
 ```
 
 ---
@@ -32,75 +32,75 @@ flowchart LR
 
 | Component | Notes |
 |-----------|-------|
-| C++ toolchain | C++17-capable compiler (MSVC, Clang, GCC) |
-| CMake | 3.10 or newer |
-| MAVLink headers | Point `MAVLINK_INCLUDE_DIR` to a `c_library_v2` checkout |
-| Python (optional) | Needed for the included PSN simulator & MAVLink test scripts |
+| C++ toolchain | Any C++17-capable compiler (MSVC, Clang, GCC) |
+| CMake | Version 3.10 or newer |
+| MAVLink headers | Provide a checkout of [`mavlink/c_library_v2`](https://github.com/mavlink/c_library_v2) via submodule or download |
+| Python (optional) | Required for the included PSN simulator and MAVLink sanity-check scripts |
 
-> 🛈 **Tip:** On Windows, ensure the Visual Studio developer tools or the MSYS2/MinGW toolchain is available in your shell before building.
+> � **Tip (Windows):** run builds from a Developer Command Prompt or a shell that exposes the MSVC toolchain, or install the MSYS2/MinGW toolset.
 
 ---
 
-## Building the bridge
+## Getting started
 
 ```powershell
-# Clone the project
-git clone https://github.com/<your-account>/PSN2MAVLink.git
+# Clone your fork with submodules
+git clone --recurse-submodules https://github.com/OmerMersin/PSN2MAVLink.git
 cd PSN2MAVLink
 
-# Configure the build (adjust the absolute path to your c_library_v2 checkout)
-cmake -B build -S . -DMAVLINK_INCLUDE_DIR="C:/path/to/mavlink/c_library_v2"
+# Configure (point MAVLINK_INCLUDE_DIR at the c_library_v2 checkout when not using submodules)
+cmake -B build -S . -DMAVLINK_INCLUDE_DIR="${PWD}/c_library_v2"
 
-# Compile
+# Build
 cmake --build build --config Release
 ```
 
-The executable `psn_to_mavlink.exe` (or `psn_to_mavlink` on Linux/macOS) lives inside the `build/` directory.
+The resulting executable lives at `build/psn_to_mavlink.exe` on Windows (or `build/psn_to_mavlink` on Linux/macOS).
 
 ---
 
-## Command-line reference
+## Runtime configuration
 
 ```powershell
 psn_to_mavlink --group 236.10.10.10 --port 56565 `
                --mav-ip 127.0.0.1 --mav-port 14550 `
-               [--mav-transport udp|tcp] [--iface 192.168.0.x] `
+               [--mav-transport udp|tcp] [--iface 192.168.0.X] `
                [--sysid 245] [--compid 200] [--tracker <id>] `
                [--no-ned] [--unicast]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--group` | `236.10.10.10` | PSN multicast or unicast group to listen on |
-| `--port` | `56565` | UDP port for PSN traffic (watch for Windows excluded ranges) |
-| `--iface` | (none) | Bind to a specific NIC when joining multicast |
-| `--mav-ip` | `127.0.0.1` | Destination IP for MAVLink telemetry |
+| `--group` | `236.10.10.10` | Multicast or unicast address that carries PSN traffic |
+| `--port` | `56565` | UDP port for PSN packets (avoid Windows-excluded ranges) |
+| `--iface` | (auto) | IPv4 interface to use when joining multicast |
+| `--mav-ip` | `127.0.0.1` | Destination host for MAVLink output |
 | `--mav-port` | `14550` | Destination port (UDP send or TCP connect) |
-| `--mav-transport` | `udp` | Choose `udp` (sendto) or `tcp` (persistent socket) |
-| `--sysid` / `--compid` | `245` / `200` | MAVLink system & component IDs for outbound messages |
-| `--tracker` | all | Forward only the tracker with this PSN ID |
-| `--no-ned` | disabled | Keep PSN Z-up coordinates (defaults to converting to NED) |
-| `--unicast` | multicast autodetect | Skip multicast join (useful for local simulators) |
-| `--help` | – | Print usage summary |
+| `--mav-transport` | `udp` | Choose `udp` for sendto; `tcp` for a persistent socket |
+| `--sysid` / `--compid` | `245` / `200` | System and component IDs in the MAVLink header |
+| `--tracker` | (all) | Restrict output to a single PSN tracker ID |
+| `--no-ned` | disabled | Leave Z untouched (PSN Z-up) instead of converting to NED |
+| `--unicast` | auto | Skip multicast join, useful for loopback generators |
+| `--help` | – | Print the usage summary |
 
 ---
 
-## Common workflows
+## Typical workflows
 
-### 1. Loopback test (UDP ➜ ArduPilot SITL)
+### 1. Loopback simulation (UDP ➜ ArduPilot SITL)
 
 ```powershell
-# Terminal 1 – launch PSN simulator (sends circular motion)
+# Terminal 1 – emit synthetic PSN packets
 python psn_sim.py --unicast --group 127.0.0.1 --port 60000 --tracker 1 --rate 30
 
-# Terminal 2 – bridge PSN to MAVLink UDP
+# Terminal 2 – bridge to MAVLink UDP
 ./build/psn_to_mavlink.exe --unicast --group 127.0.0.1 --port 60000 `
     --mav-ip 127.0.0.1 --mav-port 14550 --mav-transport udp
 ```
 
-Connect your autopilot/GCS (Mission Planner, QGroundControl, MAVProxy) to UDP port `14550` and observe `VISION_POSITION_ESTIMATE` updates.
+Connect Mission Planner, QGroundControl, or MAVProxy to UDP port `14550` to see live `VISION_POSITION_ESTIMATE` updates.
 
-### 2. Feeding a TCP-only ground station (e.g. MAVProxy TCP port 5762)
+### 2. Streaming to a TCP-only ground station (e.g. MAVProxy on 5762)
 
 ```powershell
 python psn_sim.py --unicast --group 127.0.0.1 --port 60000 --tracker 1
@@ -108,49 +108,49 @@ python psn_sim.py --unicast --group 127.0.0.1 --port 60000 --tracker 1
     --mav-ip 127.0.0.1 --mav-port 5762 --mav-transport tcp
 ```
 
-The bridge will open a TCP socket to `127.0.0.1:5762` and stream MAVLink packets over that connection.
+The bridge initiates a TCP connection to `127.0.0.1:5762` and pushes MAVLink frames over that channel.
 
 ---
 
-## Coordinate frames
+## Coordinate frame notes
 
-- PSN reports **X/Y in the stage plane** and **Z up**.
-- MAVLink `VISION_POSITION_ESTIMATE` expects **NED** (Z down). By default the bridge flips the sign of Z.
-- Use `--no-ned` if your consumer already expects Z-up data (e.g. for testing in a local visualisation tool).
+- PSN reports **X/Y in the stage plane** with **Z up**.
+- MAVLink’s `VISION_POSITION_ESTIMATE` expects **North-East-Down**, where Z negative means “up”.
+- By default the bridge flips the Z-axis (`--no-ned` disables the flip if your consumer already expects Z-up).
 
 ---
 
-## Simulation & diagnostics helpers
+## Included utilities
 
 | Script | Purpose |
 |--------|---------|
-| `psn_sim.py` | Generates synthetic circular motion PSN packets for testing |
-| `check_vision_position_estimate.py` | Sends `VISION_POSITION_ESTIMATE` frames over TCP to validate your autopilot setup |
+| `psn_sim.py` | Emits circular-motion PSN packets for bench testing |
+| `check_vision_position_estimate.py` | Sends canned MAVLink poses over TCP to verify your autopilot pipeline |
 
-> 🧪 Combine the simulator with the bridge to rehearse network and coordinate handling before deploying to a live UWB anchor network.
+Use them together to validate networking and coordinate transforms before heading to the field.
 
 ---
 
 ## Troubleshooting
 
-- **`bind failed: 10013` on Windows** – the OS reserves port ranges (see `netsh interface ipv4 show excludedportrange protocol=udp`). Pick a free port such as `60000`.
-- **`IP_ADD_MEMBERSHIP failed`** – ensure the chosen NIC can reach the multicast group and that the address is within 224.0.0.0/4. Use `--unicast` for loopback testing.
-- **No MAVLink traffic** – verify firewall rules, confirm the transport (`--mav-transport`), and use a MAVLink sniffer (e.g. `mavutil.mavlink_connection`) to monitor the target endpoint.
-- **TCP link drops** – the bridge will exit on hard TCP errors; simply restart once the ground station is reachable.
+- **`bind failed: 10013` (Windows)** – the OS reserves certain UDP ports. Check `netsh interface ipv4 show excludedportrange protocol=udp` and pick a free value (e.g. `60000`).
+- **`IP_ADD_MEMBERSHIP failed`** – ensure the address is within the multicast range (224.0.0.0/4) and that the selected NIC can reach it; otherwise run with `--unicast`.
+- **No MAVLink traffic on the receiver** – double-check firewall rules, confirm the transport mode, and sniff the destination using `mavutil.mavlink_connection()` or Wireshark.
+- **TCP link drops** – the bridge exits on hard socket errors so you can restart it once the ground station becomes reachable again.
 
 ---
 
-## Roadmap ideas
+## Roadmap
 
-- Streaming velocity (`VISION_SPEED_ESTIMATE`) when PSN speed chunks are present
-- Configurable covariance presets
-- Packaging scripts for Windows/macOS releases
-- Continuous integration build matrix
+- Emit `VISION_SPEED_ESTIMATE` when PSN velocity chunks are present.
+- Provide configurable covariance presets.
+- Add packaging scripts for Windows/macOS releases.
+- Integrate CI builds and static analysis.
 
-Contributions & pull requests are welcome!
+Contributions and pull requests are very welcome!
 
 ---
 
 ## License
 
-This project currently has no explicit license. Add a LICENSE file (e.g. MIT, Apache-2.0) before distributing binaries.
+PSN2MAVLink is released under the [MIT License](./LICENSE). See the LICENSE file for the full text.
