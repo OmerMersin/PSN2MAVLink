@@ -18,12 +18,13 @@ PSN2MAVLink is a lightweight bridge between PosiStageNet (PSN) tracking feeds an
 
 ```mermaid
 flowchart LR
-    PSN[PosiStageNet Source<br/>(multicast or unicast UDP)] -->|tracker packets| Bridge(psn_to_mavlink.exe)
-    subgraph Bridge
-        Direction[Coordinate transform<br/>(Z-up ➜ NED)]
-        Encoder[MAVLink encoder]
+    PSN["PosiStageNet Source<br/>(multicast or unicast UDP)"] -->|tracker packets| Bridge["psn_to_mavlink.exe"]
+    subgraph Bridge_Process [" "]
+        Direction["Coordinate transform<br/>(Z-up → NED)"]
+        Encoder["MAVLink encoder"]
     end
-    Bridge -->|VISION_POSITION_ESTIMATE| Autopilot[Autopilot / GCS<br/>(UDP or TCP)]
+    Bridge --> Bridge_Process
+    Bridge_Process -->|VISION_POSITION_ESTIMATE| Autopilot["Autopilot / GCS<br/>(UDP or TCP)"]
 ```
 
 ---
