@@ -1,6 +1,27 @@
 # PSN2MAVLink
 
-PSN2MAVLink is a lightweight bridge between PosiStageNet (PSN) tracking feeds and MAVLink-enabled autopilots. It listens for PSN multicast/unicast packets, converts tracker poses into `VISION_POSITION_ESTIMATE` messages, and streams them to ArduPilot, PX4, or any GCS that understands MAVLink. Use it to expose UWB anchor/tag localisation data to drones in real time.
+PSN2MAVLink is a lightweight bridge between PosiStageNet (PSN) tracking feeds and MAVLink-enabled ## Coordinate frame notes
+
+- PSN reports **X/Y in the stage plane** with **Z up**.
+- MAVLink's `VISION_POSITION_ESTIMATE` expects **North-East-Down**, where Z negative means "up".
+- By default the bridge flips the Z-axis (`--no-ned` disables the flip if your consumer already expects Z-up).
+
+---
+
+## ArduPilot configuration
+
+To enable vision-based positioning in ArduPilot, configure these parameters:
+
+```
+EK3_SRC1_POSXY = 6    # Use external nav for horizontal position
+EK3_SRC1_POSZ = 6     # Use external nav for vertical position  
+VISO_TYPE = 1         # Enable vision position estimation
+EK3_ENABLE = 1        # Enable Extended Kalman Filter
+```
+
+Set these via Mission Planner, MAVProxy (`param set EK3_SRC1_POSXY 6`), or your preferred ground station. The autopilot will then fuse the incoming `VISION_POSITION_ESTIMATE` messages with its internal navigation solution.
+
+It listens for PSN multicast/unicast packets, converts tracker poses into `VISION_POSITION_ESTIMATE` messages, and streams them to ArduPilot, PX4, or any GCS that understands MAVLink. Use it to expose UWB anchor/tag localisation data to drones in real time.
 
 ---
 
