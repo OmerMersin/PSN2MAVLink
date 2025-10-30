@@ -20,6 +20,9 @@ endif()
 add_executable(psn_to_mavlink psn_to_mavlink.cpp)
 target_include_directories(psn_to_mavlink PRIVATE "${MAVLINK_ABS}")
 
+find_package(Threads REQUIRED)
+target_link_libraries(psn_to_mavlink PRIVATE Threads::Threads)
+
 if (WIN32)
   target_compile_definitions(psn_to_mavlink PRIVATE WIN32_LEAN_AND_MEAN _WINSOCK_DEPRECATED_NO_WARNINGS)
   target_link_libraries(psn_to_mavlink PRIVATE ws2_32)
