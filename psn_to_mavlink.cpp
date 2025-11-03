@@ -760,15 +760,18 @@ static bool send_vision_position_estimate(MavlinkEndpoint& endpoint,
   uint64_t usec = static_cast<uint64_t>(stamp_s * 1e6);
 
   // Covariance (row-major upper triangle of 6x6 pose covariance -> 21 elements).
-  // If unknown, use NANs. If you prefer reasonable defaults, set e.g. 0.04f (0.2 m std^2) for pos.
+  // ArduPilot GPS-denied mode requires proper covariance values, not NANs
   float cov[21];
-  for (int i = 0; i < 21; ++i) cov[i] = NAN;
-
-  // Example (optional): give modest variances for position and yaw
-  // cov[0]  = 0.04f; // var(x)
-  // cov[2]  = 0.04f; // var(y)
-  // cov[5]  = 0.04f; // var(z)
-  // cov[20] = 0.01f; // var(yaw) ~ (≈ 0.1 rad std)^2
+  for (int i = 0; i < 21; ++i) cov[i] = 0.0f;
+  
+  // Set position variances (diagonal elements of upper triangle)
+  cov[0]  = 0.01f; // var(x) - 0.1m std deviation
+  cov[2]  = 0.01f; // var(y) - 0.1m std deviation  
+  cov[5]  = 0.04f; // var(z) - 0.2m std deviation (altitude less certain)
+  // Rotation variances (for roll, pitch, yaw)
+  cov[9]  = 0.01f; // var(roll)
+  cov[14] = 0.01f; // var(pitch)
+  cov[20] = 0.04f; // var(yaw) - 0.2 rad std deviation
 
   uint8_t reset_counter = 0;
 
@@ -934,9 +937,10 @@ int main(int argc, char** argv){
         }
       }
 
-  std::cout << "Tracker " << id << " PSN:"
-        << x << "," << y << "," << z
-        << "  NED:" << xn << "," << yn << "," << zn << '\n';
+      // Uncomment for debugging (slows down significantly):
+      // std::cout << "Tracker " << id << " PSN:"
+      //       << x << "," << y << "," << z
+      //       << "  NED:" << xn << "," << yn << "," << zn << '\n';
     }
   }
 
