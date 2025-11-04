@@ -1092,9 +1092,9 @@ int main(int argc, char** argv){
       }
 
       // Uncomment for debugging (slows down significantly):
-      // std::cout << "Tracker " << id << " PSN:"
-      //       << x << "," << y << "," << z
-      //       << "  NED:" << xn << "," << yn << "," << zn << '\n';
+      std::cout << "Tracker " << id << " PSN:"
+            << x << "," << y << "," << z
+            << "  NED:" << xn << "," << yn << "," << zn << '\n';
     }
   }
 
