@@ -1,7 +1,7 @@
 from pymavlink import mavutil
 import time
 
-mav = mavutil.mavlink_connection('tcp:127.0.0.1:5762')
+mav = mavutil.mavlink_connection('udp:127.0.0.1:14551')
 boot_time = time.time()
 
 while True:
