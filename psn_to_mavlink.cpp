@@ -436,15 +436,82 @@ struct MavlinkEndpoint {
   int serial_fd{-1};
 #endif
   std::unique_ptr<SerialAsyncWriter> serial_writer;
+  // udpin/listen support
+  bool udpin_listener{false};
+  std::atomic<bool> udpin_running{false};
+  std::thread udpin_thread;
+  std::mutex udp_mtx; // protects udp_to and has_udp_remote
+  bool has_udp_remote{false};
+
+  // Default constructor
+  MavlinkEndpoint() = default;
+  
+  // Delete copy operations (non-copyable due to mutex, atomic, thread)
+  MavlinkEndpoint(const MavlinkEndpoint&) = delete;
+  MavlinkEndpoint& operator=(const MavlinkEndpoint&) = delete;
+  
+  // Move constructor
+  MavlinkEndpoint(MavlinkEndpoint&& other) noexcept
+    : type(other.type), socket_fd(other.socket_fd), udp_to(other.udp_to),
+#ifdef _WIN32
+      serial_handle(other.serial_handle),
+#else
+      serial_fd(other.serial_fd),
+#endif
+      serial_writer(std::move(other.serial_writer)),
+      udpin_listener(other.udpin_listener),
+      udpin_running(other.udpin_running.load()),
+      udpin_thread(std::move(other.udpin_thread)),
+      has_udp_remote(other.has_udp_remote)
+  {
+    other.socket_fd = -1;
+#ifdef _WIN32
+    other.serial_handle = INVALID_HANDLE_VALUE;
+#else
+    other.serial_fd = -1;
+#endif
+  }
+  
+  // Move assignment
+  MavlinkEndpoint& operator=(MavlinkEndpoint&& other) noexcept {
+    if (this != &other) {
+      type = other.type;
+      socket_fd = other.socket_fd;
+      udp_to = other.udp_to;
+#ifdef _WIN32
+      serial_handle = other.serial_handle;
+      other.serial_handle = INVALID_HANDLE_VALUE;
+#else
+      serial_fd = other.serial_fd;
+      other.serial_fd = -1;
+#endif
+      serial_writer = std::move(other.serial_writer);
+      udpin_listener = other.udpin_listener;
+      udpin_running.store(other.udpin_running.load());
+      udpin_thread = std::move(other.udpin_thread);
+      has_udp_remote = other.has_udp_remote;
+      other.socket_fd = -1;
+    }
+    return *this;
+  }
 };
 
 static bool send_bytes(MavlinkEndpoint& endpoint, const uint8_t* data, size_t len){
   switch (endpoint.type){
     case MavlinkTransport::UDP: {
       if (endpoint.socket_fd < 0) return false;
-      int sent = (int)sendto(endpoint.socket_fd, (const char*)data, (int)len, 0,
-                             (const sockaddr*)&endpoint.udp_to, sizeof(endpoint.udp_to));
-      return sent == (int)len;
+      // If this endpoint is a udpin listener, only send once we've discovered a remote
+      if (endpoint.udpin_listener){
+        std::lock_guard<std::mutex> lk(endpoint.udp_mtx);
+        if (!endpoint.has_udp_remote) return false;
+        int sent = (int)sendto(endpoint.socket_fd, (const char*)data, (int)len, 0,
+                               (const sockaddr*)&endpoint.udp_to, sizeof(endpoint.udp_to));
+        return sent == (int)len;
+      } else {
+        int sent = (int)sendto(endpoint.socket_fd, (const char*)data, (int)len, 0,
+                               (const sockaddr*)&endpoint.udp_to, sizeof(endpoint.udp_to));
+        return sent == (int)len;
+      }
     }
     case MavlinkTransport::TCP: {
       if (endpoint.socket_fd < 0) return false;
@@ -482,7 +549,45 @@ static std::optional<MavlinkEndpoint> open_mavlink_udp_endpoint(const std::strin
   ep.udp_to.sin_family = AF_INET;
   ep.udp_to.sin_port = htons(port);
   ep.udp_to.sin_addr = *addr;
-  return ep;
+  return std::move(ep);
+}
+
+// Create a UDP socket bound to 'port' and operate in "udpin" mode: listen for incoming
+// MAVLink packets (heartbeats) and learn the remote address to send responses to.
+static std::optional<MavlinkEndpoint> open_mavlink_udpin_endpoint(const std::string& /*listen_ip*/, uint16_t port){
+  int fd = (int)socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (fd < 0){ std::perror("socket"); return std::nullopt; }
+
+  // Allow reuse
+  int reuse = 1;
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(port);
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  int bind_res = bind(fd, (sockaddr*)&addr, sizeof(addr));
+#ifdef _WIN32
+  if (bind_res == SOCKET_ERROR){
+#else
+  if (bind_res < 0){
+#endif
+    int err = last_socket_error();
+    std::cerr << "bind failed for udpin: " << format_socket_error(err) << "\n";
+    CLOSESOCK(fd); return std::nullopt;
+  }
+
+  // Bigger recv buffer (optional)
+  int rcvbuf = 1<<20;
+  setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (const char*)&rcvbuf, sizeof(rcvbuf));
+
+  MavlinkEndpoint ep{};
+  ep.type = MavlinkTransport::UDP;
+  ep.socket_fd = fd;
+  ep.udpin_listener = true;
+  ep.has_udp_remote = false;
+  std::memset(&ep.udp_to, 0, sizeof(ep.udp_to));
+  return std::move(ep);
 }
 
 static std::optional<MavlinkEndpoint> open_mavlink_tcp_endpoint(const std::string& target_ip, uint16_t port){
@@ -516,7 +621,7 @@ static std::optional<MavlinkEndpoint> open_mavlink_tcp_endpoint(const std::strin
   MavlinkEndpoint ep{};
   ep.type = MavlinkTransport::TCP;
   ep.socket_fd = fd;
-  return ep;
+  return std::move(ep);
 }
 
 static std::optional<MavlinkEndpoint> open_mavlink_serial_endpoint(const std::string& device, int baud){
@@ -586,7 +691,7 @@ static std::optional<MavlinkEndpoint> open_mavlink_serial_endpoint(const std::st
     CloseHandle(h);
     return std::nullopt;
   }
-  return ep;
+  return std::move(ep);
 #else
   int fd = open(device.c_str(), O_RDWR | O_NOCTTY | O_SYNC);
   if (fd < 0){
@@ -640,11 +745,22 @@ static std::optional<MavlinkEndpoint> open_mavlink_serial_endpoint(const std::st
     close(fd);
     return std::nullopt;
   }
-  return ep;
+  return std::move(ep);
 #endif
 }
 
 static void close_mavlink_endpoint(MavlinkEndpoint& endpoint){
+  // If this was a udpin listener, stop the receive thread first by closing the socket
+  if (endpoint.udpin_listener){
+    endpoint.udpin_running.store(false);
+    if (endpoint.socket_fd >= 0){
+      CLOSESOCK(endpoint.socket_fd);
+      endpoint.socket_fd = -1;
+    }
+    if (endpoint.udpin_thread.joinable()) endpoint.udpin_thread.join();
+    endpoint.udpin_listener = false;
+  }
+
   switch (endpoint.type){
     case MavlinkTransport::UDP:
     case MavlinkTransport::TCP:
@@ -810,7 +926,7 @@ int main(int argc, char** argv){
     else if (a=="--iface") iface_ip = next();
     else if (a=="--mav-ip") mav_ip = next(mav_ip);
     else if (a=="--mav-port") mav_port = (uint16_t)std::stoi(next());
-  else if (a=="--mav-transport") mav_transport = next(mav_transport);
+    else if (a=="--mav-transport") mav_transport = next(mav_transport);
     else if (a=="--mav-serial-baud" || a=="--serial-baud") serial_baud = std::stoi(next());
     else if (a=="--sysid") sysid = (uint8_t)std::stoi(next());
     else if (a=="--compid") compid = (uint8_t)std::stoi(next());
@@ -838,14 +954,17 @@ int main(int argc, char** argv){
 
   bool use_tcp = false;
   bool use_serial = false;
+  bool use_udpin = false;
   if (transport_lower == "udp"){
     use_tcp = false;
   } else if (transport_lower == "tcp"){
     use_tcp = true;
   } else if (transport_lower == "serial"){
     use_serial = true;
+  } else if (transport_lower == "udpin"){
+    use_udpin = true;
   } else {
-    std::cerr << "Unknown MAVLink transport '" << mav_transport << "'. Use udp, tcp, or serial.\n";
+    std::cerr << "Unknown MAVLink transport '" << mav_transport << "'. Use udp, udpin, tcp, or serial.\n";
     return 1;
   }
 
@@ -874,6 +993,8 @@ int main(int argc, char** argv){
     mav_endpoint_opt = open_mavlink_serial_endpoint(mav_ip, serial_baud);
   } else if (use_tcp){
     mav_endpoint_opt = open_mavlink_tcp_endpoint(mav_ip, mav_port);
+  } else if (use_udpin){
+    mav_endpoint_opt = open_mavlink_udpin_endpoint(mav_ip, mav_port);
   } else {
     mav_endpoint_opt = open_mavlink_udp_endpoint(mav_ip, mav_port);
   }
@@ -886,10 +1007,43 @@ int main(int argc, char** argv){
   }
   MavlinkEndpoint mav_endpoint = std::move(*mav_endpoint_opt);
 
+  // If udpin mode, start a receiver thread to learn the peer address (heartbeats)
+  if (use_udpin){
+    mav_endpoint.udpin_listener = true;
+    mav_endpoint.udpin_running.store(true);
+    mav_endpoint.udpin_thread = std::thread([&mav_endpoint]{
+      uint8_t buf[2048];
+      mavlink_message_t msg;
+      mavlink_status_t status{};
+      while (mav_endpoint.udpin_running.load()){
+        sockaddr_in from{};
+        socklen_t flen = sizeof(from);
+        ssize_t n = recvfrom(mav_endpoint.socket_fd, (char*)buf, (int)sizeof(buf), 0,
+                             (sockaddr*)&from, &flen);
+        if (n <= 0){ std::this_thread::sleep_for(std::chrono::milliseconds(5)); continue; }
+        for (ssize_t i = 0; i < n; ++i){
+          if (mavlink_parse_char(MAVLINK_COMM_0, buf[i], &msg, &status)){
+            if (msg.msgid == MAVLINK_MSG_ID_HEARTBEAT){
+              std::lock_guard<std::mutex> lk(mav_endpoint.udp_mtx);
+              mav_endpoint.udp_to = from;
+              mav_endpoint.has_udp_remote = true;
+              const char* ip = inet_ntoa(from.sin_addr);
+              std::cout << "Discovered MAVLink UDP peer " << ip << ":" << ntohs(from.sin_port) << "\n";
+            }
+          }
+        }
+      }
+    });
+  }
+
   std::cout << "PSN listen " << psn_group << ":" << psn_port << " -> MAVLink ";
   switch (mav_endpoint.type){
     case MavlinkTransport::UDP:
-      std::cout << "(udp) " << mav_ip << ":" << mav_port;
+      if (mav_endpoint.udpin_listener){
+        std::cout << "(udpin/listen) :" << mav_port;
+      } else {
+        std::cout << "(udp) " << mav_ip << ":" << mav_port;
+      }
       break;
     case MavlinkTransport::TCP:
       std::cout << "(tcp) " << mav_ip << ":" << mav_port;
